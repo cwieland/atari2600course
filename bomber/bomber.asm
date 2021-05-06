@@ -120,7 +120,13 @@ StartFrame:
     sta VSYNC                ; turn off VSYNC
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Calculations and tasks performed pre-VBLANK
+;; Set a timer for vertical blank (2812 CPU cycles, around 37 scanlines)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	LDA #44
+	STA TIM64T
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Calculations and tasks performed during VBLANK
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     lda JetXPos
     ldy #0
@@ -142,16 +148,7 @@ StartFrame:
     sta HMOVE                ; apply horizontal offsets previously set
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Display the remaining lines of VBLANK (37 minus the 4 used above)
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-    REPEAT 33
-        sta WSYNC            ; displays 33 remaining lines of VBLANK
-    REPEND
-    lda #0
-    sta VBLANK               ; turn off VBLANK
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Display the first 2-line kernel of visible scanlines with scoreboard digits
+;; Initialize TIA registers before drawing frame
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ScoreboardVisibleLine:
     lda #0                   ; clear TIA registers before each new frame
@@ -167,6 +164,18 @@ ScoreboardVisibleLine:
 
     ldx #DIGITS_HEIGHT       ; start X counter with 5 (height of digits)
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Wait for VBLANK to complete, wait 37th scanline with WSYNC
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+WaitForVBlankTimer
+	lda INTIM
+	bne WaitForVBlankTimer
+	sta WSYNC
+    sta VBLANK               ; turn off VBLANK
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Display the scoreboard digits using 2-line kernel (12 scanlines)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 .ScoreDigitLoop:
     ldy TensDigitOffset      ; get the tens digit offset for the Score
     lda Digits,Y             ; load the digit pattern from the lookup table
@@ -210,10 +219,13 @@ ScoreboardVisibleLine:
 
     lda #0
     sta PF1                  ; blanks out playfield register
-    sta WSYNC                ; wait for end of scanline
+    sta WSYNC                ; wait for the end of scanline
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Display the second 2-line kernel with the remaining visible scanlines
+;; Display the second 2-line kernel with the 180 visible scanlines
+;; - one empty scanline after score
+;; - 178 scanlines for game screen (89 pairs of scanlines)
+;; - one empty scanline before overscan
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 GameVisibleLine:
     lda #$84
@@ -231,7 +243,8 @@ GameVisibleLine:
     sta PF2                  ; set PF0, PF1, and PF2 playfield/terrain pattern
     sta CXCLR                ; clear all collisions registers
 
-    ldx #84                  ; X counts the number of remaining scanlines
+    ldx #89                  ; X counts the number of remaining scanlines
+    sta WSYNC
 
 .GameLineLoop:
     DRAW_MISSILE             ; check if should render the missile
@@ -283,14 +296,15 @@ GameVisibleLine:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     lda #2
     sta VBLANK               ; turn VBLANK on
-    REPEAT 30
-       sta WSYNC             ; display 30 lines of VBLANK Overscan
-    REPEND
-    lda #0
-    sta VBLANK               ; turn off VBLANK
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Process joystick input for player0 up/down/left/right
+;; Set the timer for the overscan (2304 CPU cycles, 30 scanlines)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	LDA #36
+	STA TIM64T
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Process joystick input for player0 up/down/left/right during overscan
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CheckP0Up:
     lda #%00010000           ; player 0 joystick up
@@ -338,7 +352,7 @@ CheckButtonPressed:
 EndInputCheck:               ; fallback when no input was performed
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Calculations to update position for next frame
+;; Calculations to update position for next frame during overscan
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 UpdateBomberPosition:
     lda BomberYPos
@@ -358,7 +372,7 @@ UpdateBomberPosition:
 EndPositionUpdate:           ; bypass to continue bomber movement when Y > 0
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Check for object collision
+;; Check for object collision during overscan
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CheckCollisionP0P1:
     lda #%10000000           ; CXPPMM bit 7 detects P0 and P1 collision
@@ -388,6 +402,16 @@ CheckCollisionM0P1:
 
 EndCollisionCheck:
     sta CXCLR                ; clear all collision flags before next frame
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Finish overscan, use WSYNC to finish 30th scanline
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+WaitForOverscanTimer:
+	LDA INTIM
+	BNE WaitForOverscanTimer
+	STA WSYNC
+    lda #0
+    sta VBLANK               ; turn off VBLANK
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Loop back to start a brand new frame
