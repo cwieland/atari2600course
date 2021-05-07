@@ -38,6 +38,10 @@ BomberColorPtr  word         ; pointer to player1 color lookup table
 JET_HEIGHT = 9               ; player0 sprite height
 BOMBER_HEIGHT = 9            ; player1 sprite height
 DIGITS_HEIGHT = 5            ; scoreboard digit height
+MAX_X_POS = 155              ; furthest right most position
+MIN_X_POS = 2                ; furthest left most position
+MAX_Y_POS = 81               ; furthest top most position
+MIN_Y_POS = 0                ; furthest bottom most position
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Start our ROM code at memory address $F000
@@ -129,15 +133,15 @@ StartFrame:
 ;; Calculations and tasks performed during VBLANK
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     lda JetXPos
-    ldy #0
+    ldx #0
     jsr SetObjectXPos        ; set player0 horizontal position (1 WSYNC)
 
     lda BomberXPos
-    ldy #1
+    ldx #1
     jsr SetObjectXPos        ; set player1 horizontal position (1 WSYNC)
 
     lda MissileXPos
-    ldy #2
+    ldx #2
     jsr SetObjectXPos        ; set missile horizontal position (1 WSYNC)
 
     jsr CalculateDigitOffset ; calculate scoreboard digits lookup table offset
@@ -165,7 +169,7 @@ ScoreboardVisibleLine:
     ldx #DIGITS_HEIGHT       ; start X counter with 5 (height of digits)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Wait for VBLANK to complete, wait 37th scanline with WSYNC
+;; Wait for VBLANK to complete, finish 37th scanline with WSYNC
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 WaitForVBlankTimer
 	lda INTIM
@@ -310,6 +314,9 @@ CheckP0Up:
     lda #%00010000           ; player 0 joystick up
     bit SWCHA
     bne CheckP0Down
+    lda JetYPos
+    cmp #MAX_Y_POS
+    beq CheckP0Down          ; skip the increment if the player is at the top
     inc JetYPos
     lda #0
     sta JetAnimOffset        ; set jet animation frame to zero
@@ -318,6 +325,9 @@ CheckP0Down:
     lda #%00100000           ; player 0 joystick up
     bit SWCHA
     bne CheckP0Left
+    lda JetYPos
+    cmp #MIN_Y_POS
+    beq CheckP0Left          ; skip the decrement if the player is at the bottom
     dec JetYPos
     lda #0
     sta JetAnimOffset        ; set jet animation frame to zero
@@ -326,6 +336,9 @@ CheckP0Left:
     lda #%01000000           ; player 0 joystick left
     bit SWCHA
     bne CheckP0Right
+    lda JetXPos
+    cmp #MIN_X_POS
+    beq CheckP0Right         ; skip the decrement if the player is all the way to the left
     dec JetXPos
     lda #JET_HEIGHT          ; the jet sprite contains 9 rows of bitmap data
     sta JetAnimOffset        ; set new offset to display second sprite frame
@@ -334,6 +347,9 @@ CheckP0Right:
     lda #%10000000           ; player 0 joystick right
     bit SWCHA
     bne CheckButtonPressed
+    lda JetXPos
+    cmp #MAX_X_POS
+    beq CheckButtonPressed   ; skip the increment if the player is all the way to the right
     inc JetXPos
     lda #JET_HEIGHT          ; the jet sprite contains 9 rows of bitmap data
     sta JetAnimOffset        ; set new offset to display second sprite frame
@@ -404,7 +420,7 @@ EndCollisionCheck:
     sta CXCLR                ; clear all collision flags before next frame
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Finish overscan, use WSYNC to finish 30th scanline
+;; Wait for overscan, use WSYNC to finish 30th scanline
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 WaitForOverscanTimer:
 	LDA INTIM
@@ -446,22 +462,37 @@ GenerateJetSound subroutine
 ;; Subroutine to handle object horizontal position with fine offset
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; A is the target x-coordinate position in pixels of our object
-;; Y is the object type (0:player0, 1:player1, 2:missile0, 3:missile1, 4:ball)
+;; X is the object type (0:player0, 1:player1, 2:missile0, 3:missile1, 4:ball)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Adjustments made on 6 May 2021 to adjust course positioning timing so that
+;; the player can be positioned all the way to the left side of the screen.
+;; Original code took a minimum of 78 clock counts (26 CPU cycles) keeping the
+;; player from reaching the left when the X position value is 0.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Code optimizations
+;; - Moved the sec opcode before the WSYNC to shave off 6 clock counts prior
+;;   to coarse positioning.
+;; - Changed two STA absolute, Y operations to STA zeropage, X operations
+;;   in order to shave off 6 additional clock counts.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; This leaves a minimum of 66 clock counts (22 CPU cycles) when the X position
+;; is 0, making it possible for the player be positioned to the left side of 
+;; the screen.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 SetObjectXPos subroutine
-    sta WSYNC                ; start a fresh new scanline
-    sec                      ; make sure carry-flag is set before subtracion
+    sec                      ; 2  make sure carry-flag is set before subtraction
+    sta WSYNC                ; 3  start a fresh new scanline
 .Div15Loop
-    sbc #15                  ; subtract 15 from accumulator
-    bcs .Div15Loop           ; loop until carry-flag is clear
-    eor #7                   ; handle offset range from -8 to 7
-    asl
-    asl
-    asl
-    asl                      ; four shift lefts to get only the top 4 bits
-    sta HMP0,Y               ; store the fine offset to the correct HMxx
-    sta RESP0,Y              ; fix object position in 15-step increment
-    rts
+    sbc #15                  ; 2  subtract 15 from accumulator
+    bcs .Div15Loop           ; 2³ loop until carry-flag is clear
+    eor #07                  ; 2  handle offset range from -8 to 7
+    asl                      ; 2
+    asl                      ; 2
+    asl                      ; 2
+    asl                      ; 2  four shift lefts to get only the top 4 bits
+    sta HMP0,X               ; 4  store the fine offset to the correct HMxx
+    sta RESP0,X              ; 4  fix object position in 15-step increment
+    rts                      ; 6
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Subroutine to generate a Linear-Feedback Shift Register random number
